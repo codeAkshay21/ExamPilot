@@ -19,7 +19,8 @@ npm install
 npm run demo        # http://localhost:5173
 ```
 
-Demo mode runs on sample data in the browser. No database, Redis or API key needed.
+Demo mode runs on sample data right in the browser, so you don't need a database, Redis
+or an API key.
 
 ## How it works
 
@@ -30,26 +31,35 @@ Demo mode runs on sample data in the browser. No database, Redis or API key need
                      Redis queue ──► 3 workers: PDF → pages → chunks → embeddings → topic tags
 ```
 
-- **Ingest.** Uploads are hashed (SHA-256 = document id, so the same file twice is one
-  document) and pushed onto a Redis queue. Workers pull text page by page, strip repeated
-  headers/footers, cut each page into chunks of at most 300 tokens, embed them with
-  `bge-small-en-v1.5`, tag a topic with a small PyTorch model, and write to Postgres.
-  A chunk never spans two pages, so every citation points at exactly one page.
-- **Queue.** Hand-written on Redis lists with `BLMOVE`: at-least-once delivery,
-  heartbeats, a reaper that hands a dead worker's job to someone else, exponential
-  backoff, and a dead-letter list after three failures. Processing is idempotent
-  (content-hash ids + `ON CONFLICT DO NOTHING`), so a job running twice is harmless.
-- **Search.** Vector search and Postgres full-text search, merged with reciprocal rank
-  fusion. Vectors catch paraphrases; keywords catch "Bellman-Ford" and "CAP theorem".
-- **Chat.** A tool loop I wrote on the Messages API, with `search_notes`,
-  `weakest_topics` and `recent_mistakes`. Search hits go back as `search_result` blocks
-  with citations on, so the model can only cite pages it was actually shown.
-- **Quiz.** Generation and grading are single structured-output calls, not an agent.
-  Questions that cite chunk ids we didn't send get dropped. Multiple choice is graded
-  locally, short answers by Claude against the reference answer and the source page.
-- **Scheduler.** Discounted Thompson sampling over topics: it looks for questions you're
-  likely to get wrong, weighted by exam weight, with old evidence fading 15% a day.
-  Due spaced-repetition reviews come first, and nothing gets scheduled after the exam.
+Uploads are hashed with SHA-256 and the hash becomes the document id, so uploading the
+same file twice still gives you one document. Each upload goes onto a Redis queue. A worker
+pulls the text out page by page, strips repeated headers and footers, cuts each page into
+chunks of at most 300 tokens, embeds them with `bge-small-en-v1.5`, tags each one with a
+topic using a small PyTorch model, and writes it all to Postgres. A chunk never spans two
+pages, so every citation points at exactly one page.
+
+I wrote the queue myself on Redis lists with `BLMOVE`. Delivery is at-least-once, with
+heartbeats, a reaper that hands a dead worker's job to another worker, exponential backoff,
+and a dead-letter list after three failures. Processing is idempotent (content-hash ids
+plus `ON CONFLICT DO NOTHING`), so a job that runs twice does no harm.
+
+Search runs vector search and Postgres full-text search and merges the two with reciprocal
+rank fusion. Vectors catch paraphrases, and keywords catch exact terms like "Bellman-Ford"
+and "CAP theorem".
+
+Chat is a tool loop I wrote on the Messages API. The model gets `search_notes`,
+`weakest_topics` and `recent_mistakes`. Search hits go back as `search_result` blocks with
+citations turned on, so the model can only cite pages it was actually shown.
+
+Quizzes don't use the tool loop. Generating a quiz is one structured-output call and grading
+is another. If a generated question cites a chunk id we didn't send, it gets dropped.
+Multiple-choice answers are graded locally, and short answers go to Claude along with the
+reference answer and the source page.
+
+The scheduler picks topics with discounted Thompson sampling. It goes after questions you're
+likely to get wrong, weighted by how much each topic counts on the exam, and old evidence
+fades by 15% a day. Spaced-repetition reviews that are due come first, and nothing gets
+scheduled after the exam date.
 
 ## Running it for real
 
@@ -68,7 +78,7 @@ python -m exampilot.cli ask "why does Dijkstra fail with negative edges?"
 No course files handy? `make sample` loads the [sample notes](samples/README.md) for all
 three courses and two weeks of made-up quiz history, without any API calls.
 
-Full stack (API + 3 workers):
+To run the full stack (the API plus three workers):
 
 ```sh
 make web            # builds web/dist, the API serves it
@@ -79,8 +89,8 @@ open http://localhost:8000
 Other CLI commands: `chat`, `quiz daa`, `search "..."`, `status`, `requeue-stuck`,
 `requeue-dead`, `retag`.
 
-Course PDFs are never committed (`data/` is gitignored). The slides are NYU material
-and the textbook is copyrighted. CI runs on the sample notes in [samples/](samples/README.md)
+I don't commit the course PDFs (`data/` is gitignored), because the slides are NYU material
+and the textbook is copyrighted. CI uses the sample notes in [samples/](samples/README.md)
 instead, with the questions in [eval/fixtures](eval/fixtures/README.md).
 
 ## Tests and evals
@@ -95,8 +105,9 @@ python bench/embed_bench.py chunks.jsonl mps
 
 CI lints, runs the tests, and fails the build if recall@5 on the sample notes drops below 0.80.
 
-On the sample notes (19 answerable questions, so small and easy, but it caught a real bug:
-keyword search used to AND every word of the question and found almost nothing):
+Here's how retrieval does on the sample notes. It's a small, easy set (19 answerable
+questions), but it still caught a real bug: keyword search used to AND every word of the
+question together and found almost nothing.
 
 | Retrieval (samples) | recall@5 | MRR@10 |
 |---|---|---|
@@ -104,7 +115,8 @@ keyword search used to AND every word of the question and found almost nothing):
 | Keyword only (before the fix) | 0.105 | 0.105 |
 | Keyword only | 1.000 | 0.912 |
 | Hybrid (RRF) | 1.000 | 0.947 |
-The LLM-judged answer eval runs on demand from the Actions tab.
+
+The LLM-judged answer eval doesn't run on every push. You trigger it from the Actions tab.
 
 ## Results
 
